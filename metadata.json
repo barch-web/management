@@ -1,0 +1,6 @@
+{
+  "name": "Aegis Vanguard — Security Operations & Company Management System",
+  "description": "Enterprise security services management system for manned guarding, industrial security, Cash-in-Transit (CIT), valuable transport, CCTV surveillance, event security, and asset protection with strict RBAC and Supabase RLS architecture.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
