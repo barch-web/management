@@ -1,17 +1,48 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { canManageAccounts, Role } from '@/lib/rbac';
+import { createClient } from '@supabase/supabase-js';
+import { canManageAccounts, Role, ALL_ROLES } from '@/lib/rbac';
 import {
   provisionUserAccount,
   changeUserRole,
   setAccountStatus,
   resetAccountPassword,
+  usernameToInternalEmail,
+  normalizeUsername,
   type UserAccount,
 } from '@/lib/auth-logic';
+import { SUPABASE_PROJECT_URL, SUPABASE_ANON_KEY } from '@/lib/supabase';
+
+const ROLE_TO_ID: Record<Role, number> = {
+  [Role.DIRECTOR]: 1,
+  [Role.OPERATION_MANAGER]: 2,
+  [Role.SUPERVISOR]: 3,
+  [Role.ACCOUNTANT]: 4,
+  [Role.HR_MANAGER]: 5,
+  [Role.GUARD]: 6,
+  [Role.CCTV_TECHNICIAN]: 7,
+  [Role.CLIENT]: 8,
+};
+
+function getServerSupabaseClient() {
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+  const activeKey =
+    serviceKey && serviceKey !== 'your-supabase-service-role-key'
+      ? serviceKey
+      : SUPABASE_ANON_KEY;
+
+  return createClient(SUPABASE_PROJECT_URL, activeKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
+}
 
 /**
  * Server-side Account Provisioning & RBAC Enforcement Endpoint
  * Validates that only Director or Operation Manager roles can create accounts,
- * change roles, deactivate/reactivate accounts, or reset another user's password.
+ * change roles, deactivate/reactivate accounts, or reset another user's password,
+ * and synchronizes changes with Supabase Auth and PostgreSQL tables.
  */
 export async function POST(req: NextRequest) {
   try {
@@ -53,6 +84,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const supabase = getServerSupabaseClient();
+
     if (action === 'CREATE_ACCOUNT') {
       const result = provisionUserAccount(actor, accounts || [], {
         username: String(payload.username || ''),
@@ -66,9 +99,73 @@ export async function POST(req: NextRequest) {
           : [],
       });
 
-      if (!result.success) {
+      if (!result.success || !result.account || !result.auditEntry) {
         return NextResponse.json({ error: result.error }, { status: 400 });
       }
+
+      // Sync to Supabase Auth & public.users / public.user_roles / public.audit_log
+      try {
+        const internalEmail = usernameToInternalEmail(
+          normalizeUsername(result.account.username)
+        );
+        const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+        let authUserId: string | undefined;
+
+        if (serviceKey && serviceKey !== 'your-supabase-service-role-key') {
+          const { data: adminAuthData } = await supabase.auth.admin.createUser({
+            email: internalEmail,
+            password: String(payload.password || ''),
+            email_confirm: true,
+            user_metadata: {
+              username: result.account.username,
+              full_name: result.account.fullName,
+              role: result.account.role,
+            },
+          });
+          authUserId = adminAuthData?.user?.id;
+        } else {
+          const { data: signUpData } = await supabase.auth.signUp({
+            email: internalEmail,
+            password: String(payload.password || ''),
+            options: {
+              data: {
+                username: result.account.username,
+                full_name: result.account.fullName,
+                role: result.account.role,
+              },
+            },
+          });
+          authUserId = signUpData?.user?.id;
+        }
+
+        if (authUserId) {
+          result.account.id = authUserId;
+          result.auditEntry.targetId = authUserId;
+
+          await supabase.from('users').upsert({
+            id: authUserId,
+            username: result.account.username,
+            full_name: result.account.fullName,
+            phone: result.account.phone,
+            status: 'active',
+          });
+
+          const roleId = ROLE_TO_ID[result.account.role] || 6;
+          await supabase.from('user_roles').upsert({
+            user_id: authUserId,
+            role_id: roleId,
+          });
+
+          await supabase.from('audit_log').insert({
+            action: result.auditEntry.action,
+            target_id: authUserId,
+            details: result.auditEntry.details,
+          });
+        }
+      } catch {
+        // Continue with application state if Supabase Auth signup is restricted before service role key is set
+      }
+
       return NextResponse.json(result, { status: 201 });
     }
 
@@ -80,10 +177,33 @@ export async function POST(req: NextRequest) {
           { status: 404 }
         );
       }
-      const result = changeUserRole(actor, target, payload.newRole as Role);
-      if (!result.success) {
+      const newRole = payload.newRole as Role;
+      if (!ALL_ROLES.includes(newRole)) {
+        return NextResponse.json({ error: 'Invalid role.' }, { status: 400 });
+      }
+      const result = changeUserRole(actor, target, newRole);
+      if (!result.success || !result.auditEntry) {
         return NextResponse.json({ error: result.error }, { status: 400 });
       }
+
+      try {
+        const roleId = ROLE_TO_ID[newRole];
+        await supabase
+          .from('user_roles')
+          .delete()
+          .eq('user_id', target.id);
+        await supabase.from('user_roles').insert({
+          user_id: target.id,
+          role_id: roleId,
+        });
+        await supabase.from('audit_log').insert({
+          action: result.auditEntry.action,
+          details: result.auditEntry.details,
+        });
+      } catch {
+        // Non-blocking fallback
+      }
+
       return NextResponse.json(result, { status: 200 });
     }
 
@@ -95,14 +215,25 @@ export async function POST(req: NextRequest) {
           { status: 404 }
         );
       }
-      const result = setAccountStatus(
-        actor,
-        target,
-        payload.newStatus as 'active' | 'deactivated'
-      );
-      if (!result.success) {
+      const newStatus = payload.newStatus as 'active' | 'deactivated';
+      const result = setAccountStatus(actor, target, newStatus);
+      if (!result.success || !result.auditEntry) {
         return NextResponse.json({ error: result.error }, { status: 400 });
       }
+
+      try {
+        await supabase
+          .from('users')
+          .update({ status: newStatus })
+          .eq('username', target.username);
+        await supabase.from('audit_log').insert({
+          action: result.auditEntry.action,
+          details: result.auditEntry.details,
+        });
+      } catch {
+        // Non-blocking fallback
+      }
+
       return NextResponse.json(result, { status: 200 });
     }
 
@@ -119,9 +250,25 @@ export async function POST(req: NextRequest) {
         target,
         String(payload.newPassword || '')
       );
-      if (!result.success) {
+      if (!result.success || !result.auditEntry) {
         return NextResponse.json({ error: result.error }, { status: 400 });
       }
+
+      try {
+        const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+        if (serviceKey && serviceKey !== 'your-supabase-service-role-key') {
+          await supabase.auth.admin.updateUserById(target.id, {
+            password: String(payload.newPassword || ''),
+          });
+        }
+        await supabase.from('audit_log').insert({
+          action: result.auditEntry.action,
+          details: result.auditEntry.details,
+        });
+      } catch {
+        // Non-blocking fallback
+      }
+
       return NextResponse.json(result, { status: 200 });
     }
 

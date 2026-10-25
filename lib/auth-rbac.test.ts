@@ -445,3 +445,18 @@ test('Session timeout and operational form validators catch invalid inputs', () 
     false
   );
 });
+
+test('Supabase URL normalization strips /rest/v1/ suffix accurately', async () => {
+  const { normalizeSupabaseUrl, SUPABASE_PROJECT_URL, isSupabaseConfigured } =
+    await import('./supabase');
+  assert.equal(
+    normalizeSupabaseUrl('https://zlkwkbwzpiqzgnqjgseh.supabase.co/rest/v1/'),
+    'https://zlkwkbwzpiqzgnqjgseh.supabase.co'
+  );
+  assert.equal(
+    SUPABASE_PROJECT_URL,
+    'https://zlkwkbwzpiqzgnqjgseh.supabase.co'
+  );
+  assert.equal(isSupabaseConfigured, true);
+});
+

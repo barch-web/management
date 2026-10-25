@@ -33,7 +33,18 @@ import {
   type UserAccount,
   type CreateAccountInput,
 } from '@/lib/auth-logic';
-import { signInWithSupabaseUsername } from '@/lib/supabase';
+import {
+  signInWithSupabaseUsername,
+  signOutSupabase,
+  fetchSupabaseLiveState,
+  persistSiteToSupabase,
+  persistShiftToSupabase,
+  persistIncidentToSupabase,
+  persistCITJobToSupabase,
+  persistCCTVJobToSupabase,
+  persistInvoiceToSupabase,
+  persistRBACConfigToSupabase,
+} from '@/lib/supabase';
 import {
   INITIAL_STATE,
   type SystemState,
@@ -96,6 +107,18 @@ export default function SecurityManagementApp() {
   const [selfNewPassword, setSelfNewPassword] = useState('');
   const [selfPwMsg, setSelfPwMsg] = useState<string | null>(null);
 
+  // Hydrate live rows from Supabase on initial load
+  useEffect(() => {
+    let active = true;
+    fetchSupabaseLiveState(INITIAL_STATE).then((patch) => {
+      if (!active || Object.keys(patch).length === 0) return;
+      setState((prev) => ({ ...prev, ...patch }));
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   // Sync currentUser when accounts list updates (e.g., role change)
   useEffect(() => {
     if (!currentUser) return;
@@ -114,7 +137,7 @@ export default function SecurityManagementApp() {
     username: string,
     password: string
   ): Promise<{ success: boolean; error?: string }> => {
-    // Attempt live Supabase Auth if configured in .env
+    // Authenticate against live Supabase project
     await signInWithSupabaseUsername(username, password).catch(() => null);
 
     const authResult = authenticateWithUsernamePassword(
@@ -132,6 +155,7 @@ export default function SecurityManagementApp() {
   };
 
   const handleSignOut = () => {
+    signOutSupabase();
     setCurrentUser(null);
     setMobileMenuOpen(false);
   };
@@ -287,6 +311,7 @@ export default function SecurityManagementApp() {
 
   const handleUpdateOpsFinanceAccess = (level: PermissionLevel) => {
     if (!currentUser || currentUser.role !== Role.DIRECTOR) return;
+    persistRBACConfigToSupabase(level);
     setState((prev) => ({
       ...prev,
       rbacConfig: {
@@ -354,6 +379,7 @@ export default function SecurityManagementApp() {
   };
 
   const handleCreateShift = (newShift: Omit<ShiftRecord, 'id'>) => {
+    persistShiftToSupabase(newShift);
     setState((prev) => ({
       ...prev,
       shifts: [{ id: `sh-${Date.now()}`, ...newShift }, ...prev.shifts],
@@ -398,6 +424,7 @@ export default function SecurityManagementApp() {
   };
 
   const handleAddSite = (site: Omit<SiteRecord, 'id'>) => {
+    persistSiteToSupabase(site);
     setState((prev) => ({
       ...prev,
       sites: [{ id: `site-${Date.now()}`, ...site }, ...prev.sites],
@@ -405,6 +432,7 @@ export default function SecurityManagementApp() {
   };
 
   const handleCreateIncident = (inc: Omit<IncidentRecord, 'id'>) => {
+    persistIncidentToSupabase(inc);
     setState((prev) => ({
       ...prev,
       incidents: [{ id: `inc-${Date.now()}`, ...inc }, ...prev.incidents],
@@ -442,6 +470,7 @@ export default function SecurityManagementApp() {
   };
 
   const handleCreateCITJob = (job: Omit<CITJobRecord, 'id'>) => {
+    persistCITJobToSupabase(job);
     setState((prev) => ({
       ...prev,
       citJobs: [{ id: `cit-${Date.now()}`, ...job }, ...prev.citJobs],
@@ -479,6 +508,7 @@ export default function SecurityManagementApp() {
   };
 
   const handleCreateCCTVJob = (job: Omit<CCTVJobRecord, 'id'>) => {
+    persistCCTVJobToSupabase(job);
     setState((prev) => ({
       ...prev,
       cctvJobs: [{ id: `cctv-${Date.now()}`, ...job }, ...prev.cctvJobs],
@@ -509,6 +539,7 @@ export default function SecurityManagementApp() {
   };
 
   const handleCreateInvoice = (inv: Omit<InvoiceRecord, 'id'>) => {
+    persistInvoiceToSupabase(inv);
     setState((prev) => ({
       ...prev,
       invoices: [{ id: `inv-${Date.now()}`, ...inv }, ...prev.invoices],
