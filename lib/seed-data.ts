@@ -1,4 +1,11 @@
-import { Role, ServiceLine, type RBACConfig, DEFAULT_RBAC_CONFIG } from './rbac';
+import {
+  Role,
+  ServiceLine,
+  ALL_ROLES,
+  ALL_SERVICE_LINES,
+  type RBACConfig,
+  DEFAULT_RBAC_CONFIG,
+} from './rbac';
 import { hashPassword, type UserAccount, type AuditLogEntry } from './auth-logic';
 
 export interface ClientRecord {
@@ -15,7 +22,7 @@ export interface SiteRecord {
   clientId: string;
   siteName: string;
   address: string;
-  serviceType: ServiceLine;
+  serviceType: string;
   supervisorId: string;
   assignedGuardIds: string[];
   riskLevel: 'Standard' | 'Elevated' | 'High' | 'Critical';
@@ -139,7 +146,7 @@ export interface InvoiceRecord {
   id: string;
   invoiceNumber: string;
   clientId: string;
-  serviceLine: ServiceLine;
+  serviceLine: string;
   amount: number;
   status: 'Draft' | 'Issued' | 'Paid' | 'Overdue';
   issuedDate: string;
@@ -150,7 +157,7 @@ export interface InvoiceRecord {
 export interface ExpenseRecord {
   id: string;
   category: 'Armored Fleet Fuel & Maintenance' | 'CCTV Hardware & NVRs' | 'Tactical Uniforms & Radios' | 'Licensing & Insurance';
-  serviceLine: ServiceLine;
+  serviceLine: string;
   description: string;
   amount: number;
   date: string;
@@ -158,6 +165,8 @@ export interface ExpenseRecord {
 
 export interface SystemState {
   rbacConfig: RBACConfig;
+  rolesList: string[];
+  serviceLines: string[];
   accounts: UserAccount[];
   clients: ClientRecord[];
   sites: SiteRecord[];
@@ -298,6 +307,8 @@ export const INITIAL_ACCOUNTS: UserAccount[] = [
 
 export const INITIAL_STATE: SystemState = {
   rbacConfig: { ...DEFAULT_RBAC_CONFIG },
+  rolesList: [...ALL_ROLES],
+  serviceLines: [...ALL_SERVICE_LINES],
   accounts: INITIAL_ACCOUNTS,
   clients: [
     {

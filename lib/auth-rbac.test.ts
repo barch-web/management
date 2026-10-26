@@ -22,6 +22,8 @@ import {
   verifyPassword,
   authenticateWithUsernamePassword,
   provisionUserAccount,
+  updateUserAccount,
+  deleteUserAccount,
   changeUserRole,
   setAccountStatus,
   resetAccountPassword,
@@ -269,6 +271,31 @@ test('Role changes, account deactivation, and password resets enforce RBAC and l
   const adminPwReset = resetAccountPassword(director, guard, 'AdminReset#2026');
   assert.equal(adminPwReset.success, true);
   assert.equal(adminPwReset.auditEntry?.action, 'PASSWORD_RESET');
+
+  // Director can edit user account details and delete another user account
+  const editRes = updateUserAccount(
+    director,
+    guard,
+    {
+      username: 'guard.mercer.prime',
+      fullName: 'Liam Mercer Prime',
+      phone: '+44 20 7946 0999',
+    },
+    accounts
+  );
+  assert.equal(editRes.success, true);
+  assert.equal(editRes.updatedAccount?.username, 'guard.mercer.prime');
+  assert.equal(editRes.auditEntry?.action, 'ACCOUNT_UPDATED');
+
+  // Supervisor cannot delete accounts, Director can delete accounts (except own)
+  const unauthDel = deleteUserAccount(supervisor, guard);
+  assert.equal(unauthDel.success, false);
+  const selfDel = deleteUserAccount(director, director);
+  assert.equal(selfDel.success, false);
+  const validDel = deleteUserAccount(director, guard);
+  assert.equal(validDel.success, true);
+  assert.equal(validDel.deletedId, guard.id);
+  assert.equal(validDel.auditEntry?.action, 'ACCOUNT_DELETED');
 });
 
 test('Permissions Matrix accurately enforces module access across all 8 roles', () => {

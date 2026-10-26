@@ -23,6 +23,7 @@ export interface AuditLogEntry {
   actorRole: Role;
   action:
     | 'ACCOUNT_CREATED'
+    | 'ACCOUNT_UPDATED'
     | 'ROLE_CHANGED'
     | 'ACCOUNT_DEACTIVATED'
     | 'ACCOUNT_REACTIVATED'
@@ -425,6 +426,134 @@ export function resetAccountPassword(
   return {
     success: true,
     updatedAccount,
+    auditEntry,
+  };
+}
+
+export function updateUserAccount(
+  actor: Pick<UserAccount, 'id' | 'username' | 'role'>,
+  target: UserAccount,
+  updates: {
+    username?: string;
+    fullName?: string;
+    phone?: string;
+    role?: Role;
+  },
+  existingAccounts: UserAccount[] = [],
+  nowIso: string = new Date().toISOString()
+): {
+  success: boolean;
+  updatedAccount?: UserAccount;
+  auditEntry?: AuditLogEntry;
+  error?: string;
+} {
+  if (!canManageAccounts(actor.role)) {
+    return {
+      success: false,
+      error:
+        'Forbidden: Only Director or Operation Manager accounts may edit user accounts.',
+    };
+  }
+
+  let nextUsername = target.username;
+  if (updates.username !== undefined) {
+    const uCheck = validateUsernameFormat(updates.username);
+    if (!uCheck.valid) {
+      return { success: false, error: uCheck.error };
+    }
+    nextUsername = normalizeUsername(updates.username);
+    const conflict = existingAccounts.some(
+      (a) => a.id !== target.id && normalizeUsername(a.username) === nextUsername
+    );
+    if (conflict) {
+      return {
+        success: false,
+        error: `Username "${nextUsername}" is already in use.`,
+      };
+    }
+  }
+
+  const nextFullName =
+    updates.fullName !== undefined ? updates.fullName.trim() : target.fullName;
+  if (!nextFullName) {
+    return { success: false, error: 'Full name cannot be empty.' };
+  }
+
+  const nextPhone =
+    updates.phone !== undefined ? updates.phone.trim() : target.phone;
+  if (!nextPhone) {
+    return { success: false, error: 'Phone number cannot be empty.' };
+  }
+
+  const nextRole = updates.role !== undefined ? updates.role : target.role;
+
+  const updatedAccount: UserAccount = {
+    ...target,
+    username: nextUsername,
+    fullName: nextFullName,
+    phone: nextPhone,
+    role: nextRole,
+  };
+
+  const auditEntry: AuditLogEntry = {
+    id: `aud-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    actorId: actor.id,
+    actorUsername: actor.username,
+    actorRole: actor.role,
+    action: 'ACCOUNT_UPDATED',
+    targetId: target.id,
+    targetUsername: updatedAccount.username,
+    details: `Updated account "${updatedAccount.username}" (${updatedAccount.fullName} · ${updatedAccount.role})`,
+    timestamp: nowIso,
+  };
+
+  return {
+    success: true,
+    updatedAccount,
+    auditEntry,
+  };
+}
+
+export function deleteUserAccount(
+  actor: Pick<UserAccount, 'id' | 'username' | 'role'>,
+  target: UserAccount,
+  nowIso: string = new Date().toISOString()
+): {
+  success: boolean;
+  deletedId?: string;
+  auditEntry?: AuditLogEntry;
+  error?: string;
+} {
+  if (!canManageAccounts(actor.role)) {
+    return {
+      success: false,
+      error:
+        'Forbidden: Only Director or Operation Manager accounts may delete user accounts.',
+    };
+  }
+
+  if (actor.id === target.id) {
+    return {
+      success: false,
+      error: 'Cannot delete your own currently logged-in account.',
+    };
+  }
+
+  const auditEntry: AuditLogEntry = {
+    id: `aud-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    actorId: actor.id,
+    actorUsername: actor.username,
+    actorRole: actor.role,
+    action: 'ACCOUNT_DELETED',
+    targetId: target.id,
+    targetUsername: target.username,
+    details: `Permanently deleted account "${target.username}" (${target.role})`,
+    timestamp: nowIso,
+  };
+
+  return {
+    success: true,
+    deletedId: target.id,
     auditEntry,
   };
 }

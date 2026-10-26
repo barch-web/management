@@ -1,18 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { canManageAccounts, Role, ALL_ROLES } from '@/lib/rbac';
+import { canManageAccounts, Role } from '@/lib/rbac';
 import {
   provisionUserAccount,
   changeUserRole,
   setAccountStatus,
   resetAccountPassword,
+  updateUserAccount,
+  deleteUserAccount,
   usernameToInternalEmail,
   normalizeUsername,
   type UserAccount,
 } from '@/lib/auth-logic';
 import { SUPABASE_PROJECT_URL, SUPABASE_ANON_KEY } from '@/lib/supabase';
 
-const ROLE_TO_ID: Record<Role, number> = {
+const ROLE_TO_ID: Record<string, number> = {
   [Role.DIRECTOR]: 1,
   [Role.OPERATION_MANAGER]: 2,
   [Role.SUPERVISOR]: 3,
@@ -40,9 +42,8 @@ function getServerSupabaseClient() {
 
 /**
  * Server-side Account Provisioning & RBAC Enforcement Endpoint
- * Validates that only Director or Operation Manager roles can create accounts,
- * change roles, deactivate/reactivate accounts, or reset another user's password,
- * and synchronizes changes with Supabase Auth and PostgreSQL tables.
+ * Validates that only Director or Operation Manager roles can create, edit,
+ * delete accounts, change roles, deactivate/reactivate accounts, or reset another user's password.
  */
 export async function POST(req: NextRequest) {
   try {
@@ -55,6 +56,8 @@ export async function POST(req: NextRequest) {
     }: {
       action:
         | 'CREATE_ACCOUNT'
+        | 'UPDATE_ACCOUNT'
+        | 'DELETE_ACCOUNT'
         | 'CHANGE_ROLE'
         | 'SET_STATUS'
         | 'RESET_PASSWORD';
@@ -70,7 +73,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Server-side guard for administrative account actions
     const isSelfPasswordUpdate =
       action === 'RESET_PASSWORD' && payload?.targetId === actor.id;
 
@@ -103,7 +105,6 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: result.error }, { status: 400 });
       }
 
-      // Sync to Supabase Auth & public.users / public.user_roles / public.audit_log
       try {
         const internalEmail = usernameToInternalEmail(
           normalizeUsername(result.account.username)
@@ -163,10 +164,86 @@ export async function POST(req: NextRequest) {
           });
         }
       } catch {
-        // Continue with application state if Supabase Auth signup is restricted before service role key is set
+        // Non-blocking fallback
       }
 
       return NextResponse.json(result, { status: 201 });
+    }
+
+    if (action === 'UPDATE_ACCOUNT') {
+      const target = (accounts || []).find((a) => a.id === payload.targetId);
+      if (!target) {
+        return NextResponse.json(
+          { error: 'Target account not found.' },
+          { status: 404 }
+        );
+      }
+      const result = updateUserAccount(
+        actor,
+        target,
+        {
+          username:
+            payload.username !== undefined
+              ? String(payload.username)
+              : undefined,
+          fullName:
+            payload.fullName !== undefined
+              ? String(payload.fullName)
+              : undefined,
+          phone:
+            payload.phone !== undefined ? String(payload.phone) : undefined,
+          role: payload.role ? (payload.role as Role) : undefined,
+        },
+        accounts || []
+      );
+      if (!result.success || !result.updatedAccount || !result.auditEntry) {
+        return NextResponse.json({ error: result.error }, { status: 400 });
+      }
+
+      try {
+        await supabase
+          .from('users')
+          .update({
+            username: result.updatedAccount.username,
+            full_name: result.updatedAccount.fullName,
+            phone: result.updatedAccount.phone,
+          })
+          .eq('id', target.id);
+        await supabase.from('audit_log').insert({
+          action: result.auditEntry.action,
+          details: result.auditEntry.details,
+        });
+      } catch {
+        // Non-blocking fallback
+      }
+
+      return NextResponse.json(result, { status: 200 });
+    }
+
+    if (action === 'DELETE_ACCOUNT') {
+      const target = (accounts || []).find((a) => a.id === payload.targetId);
+      if (!target) {
+        return NextResponse.json(
+          { error: 'Target account not found.' },
+          { status: 404 }
+        );
+      }
+      const result = deleteUserAccount(actor, target);
+      if (!result.success || !result.auditEntry) {
+        return NextResponse.json({ error: result.error }, { status: 400 });
+      }
+
+      try {
+        await supabase.from('users').delete().eq('id', target.id);
+        await supabase.from('audit_log').insert({
+          action: result.auditEntry.action,
+          details: result.auditEntry.details,
+        });
+      } catch {
+        // Non-blocking fallback
+      }
+
+      return NextResponse.json(result, { status: 200 });
     }
 
     if (action === 'CHANGE_ROLE') {
@@ -178,9 +255,6 @@ export async function POST(req: NextRequest) {
         );
       }
       const newRole = payload.newRole as Role;
-      if (!ALL_ROLES.includes(newRole)) {
-        return NextResponse.json({ error: 'Invalid role.' }, { status: 400 });
-      }
       const result = changeUserRole(actor, target, newRole);
       if (!result.success || !result.auditEntry) {
         return NextResponse.json({ error: result.error }, { status: 400 });
@@ -188,14 +262,13 @@ export async function POST(req: NextRequest) {
 
       try {
         const roleId = ROLE_TO_ID[newRole];
-        await supabase
-          .from('user_roles')
-          .delete()
-          .eq('user_id', target.id);
-        await supabase.from('user_roles').insert({
-          user_id: target.id,
-          role_id: roleId,
-        });
+        if (roleId) {
+          await supabase.from('user_roles').delete().eq('user_id', target.id);
+          await supabase.from('user_roles').insert({
+            user_id: target.id,
+            role_id: roleId,
+          });
+        }
         await supabase.from('audit_log').insert({
           action: result.auditEntry.action,
           details: result.auditEntry.details,

@@ -24,7 +24,6 @@ import {
   Role,
   ALL_ROLES,
   getAllowedModulesForRole,
-  hasPermission,
   type ModuleKey,
   type PermissionLevel,
 } from '@/lib/rbac';
@@ -44,6 +43,7 @@ import {
   persistCCTVJobToSupabase,
   persistInvoiceToSupabase,
   persistRBACConfigToSupabase,
+  getSupabaseClient,
 } from '@/lib/supabase';
 import {
   INITIAL_STATE,
@@ -51,6 +51,8 @@ import {
   type ShiftRecord,
   type IncidentRecord,
   type SiteRecord,
+  type ClientRecord,
+  type EmployeeRecord,
   type CITJobRecord,
   type CCTVJobRecord,
   type InvoiceRecord,
@@ -119,7 +121,7 @@ export default function SecurityManagementApp() {
     };
   }, []);
 
-  // Sync currentUser when accounts list updates (e.g., role change)
+  // Sync currentUser when accounts list updates (e.g., role or username change)
   useEffect(() => {
     if (!currentUser) return;
     const updated = state.accounts.find((a) => a.id === currentUser.id);
@@ -127,7 +129,11 @@ export default function SecurityManagementApp() {
       setCurrentUser(null);
       return;
     }
-    if (updated.role !== currentUser.role) {
+    if (
+      updated.role !== currentUser.role ||
+      updated.username !== currentUser.username ||
+      updated.fullName !== currentUser.fullName
+    ) {
       const { passwordHash: _pw, ...safe } = updated;
       setCurrentUser(safe);
     }
@@ -137,7 +143,6 @@ export default function SecurityManagementApp() {
     username: string,
     password: string
   ): Promise<{ success: boolean; error?: string }> => {
-    // Authenticate against live Supabase project
     await signInWithSupabaseUsername(username, password).catch(() => null);
 
     const authResult = authenticateWithUsernamePassword(
@@ -202,6 +207,71 @@ export default function SecurityManagementApp() {
     setState((prev) => ({
       ...prev,
       accounts: [data.account, ...prev.accounts],
+      auditLogs: [data.auditEntry, ...prev.auditLogs],
+    }));
+    return { success: true };
+  };
+
+  const handleUpdateAccount = async (
+    targetId: string,
+    updates: { username?: string; fullName?: string; phone?: string; role?: Role }
+  ): Promise<{ success: boolean; error?: string }> => {
+    if (!currentUser) return { success: false, error: 'Not authenticated.' };
+    const res = await fetch('/api/accounts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'UPDATE_ACCOUNT',
+        actor: {
+          id: currentUser.id,
+          username: currentUser.username,
+          role: currentUser.role,
+        },
+        accounts: state.accounts,
+        payload: { targetId, updates },
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      return { success: false, error: data.error || 'Update failed.' };
+    }
+
+    setState((prev) => ({
+      ...prev,
+      accounts: prev.accounts.map((a) =>
+        a.id === targetId ? data.updatedAccount : a
+      ),
+      auditLogs: [data.auditEntry, ...prev.auditLogs],
+    }));
+    return { success: true };
+  };
+
+  const handleDeleteAccount = async (
+    targetId: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    if (!currentUser) return { success: false, error: 'Not authenticated.' };
+    const res = await fetch('/api/accounts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'DELETE_ACCOUNT',
+        actor: {
+          id: currentUser.id,
+          username: currentUser.username,
+          role: currentUser.role,
+        },
+        accounts: state.accounts,
+        payload: { targetId },
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      return { success: false, error: data.error || 'Delete failed.' };
+    }
+
+    setState((prev) => ({
+      ...prev,
+      accounts: prev.accounts.filter((a) => a.id !== targetId),
       auditLogs: [data.auditEntry, ...prev.auditLogs],
     }));
     return { success: true };
@@ -336,8 +406,164 @@ export default function SecurityManagementApp() {
   };
 
   /* ==========================================================================
-     OPERATIONAL STATE HANDLERS
+     ROLES & COMPANY SERVICE LINES CRUD HANDLERS (DIRECTOR)
      ========================================================================== */
+  const handleAddRole = (roleName: string) => {
+    const clean = roleName.trim();
+    if (!clean) return;
+    setState((prev) => {
+      if (prev.rolesList.includes(clean)) return prev;
+      return {
+        ...prev,
+        rolesList: [...prev.rolesList, clean],
+      };
+    });
+  };
+
+  const handleEditRole = (oldRoleName: string, newRoleName: string) => {
+    const clean = newRoleName.trim();
+    if (!clean) return;
+    setState((prev) => ({
+      ...prev,
+      rolesList: prev.rolesList.map((r) => (r === oldRoleName ? clean : r)),
+    }));
+  };
+
+  const handleDeleteRole = (roleName: string) => {
+    setState((prev) => ({
+      ...prev,
+      rolesList: prev.rolesList.filter((r) => r !== roleName),
+    }));
+  };
+
+  const handleAddServiceLine = (name: string) => {
+    const clean = name.trim();
+    if (!clean) return;
+    setState((prev) => {
+      if (prev.serviceLines.includes(clean)) return prev;
+      return {
+        ...prev,
+        serviceLines: [...prev.serviceLines, clean],
+      };
+    });
+  };
+
+  const handleUpdateServiceLine = (oldName: string, newName: string) => {
+    const clean = newName.trim();
+    if (!clean) return;
+    setState((prev) => ({
+      ...prev,
+      serviceLines: prev.serviceLines.map((s) => (s === oldName ? clean : s)),
+      sites: prev.sites.map((site) =>
+        site.serviceType === oldName
+          ? { ...site, serviceType: clean as SiteRecord['serviceType'] }
+          : site
+      ),
+    }));
+  };
+
+  const handleDeleteServiceLine = (name: string) => {
+    setState((prev) => ({
+      ...prev,
+      serviceLines: prev.serviceLines.filter((s) => s !== name),
+    }));
+  };
+
+  /* ==========================================================================
+     OPERATIONAL STATE & CRUD HANDLERS (SITES, CLIENTS, HR, SHIFTS, INCIDENTS, CIT, CCTV, INVOICES)
+     ========================================================================== */
+  const handleAddSite = (site: Omit<SiteRecord, 'id'>) => {
+    persistSiteToSupabase(site);
+    setState((prev) => ({
+      ...prev,
+      sites: [{ id: `site-${Date.now()}`, ...site }, ...prev.sites],
+    }));
+  };
+
+  const handleUpdateSite = (siteId: string, patch: Partial<SiteRecord>) => {
+    const sb = getSupabaseClient();
+    sb.from('sites')
+      .update({
+        site_name: patch.siteName,
+        address: patch.address,
+        service_type: patch.serviceType,
+        risk_level: patch.riskLevel,
+        risk_notes: patch.riskNotes,
+        required_guards: patch.requiredGuards,
+        active_cameras: patch.activeCameras,
+      })
+      .eq('id', siteId)
+      .then(() => null);
+    setState((prev) => ({
+      ...prev,
+      sites: prev.sites.map((s) => (s.id === siteId ? { ...s, ...patch } : s)),
+    }));
+  };
+
+  const handleDeleteSite = (siteId: string) => {
+    const sb = getSupabaseClient();
+    sb.from('sites')
+      .delete()
+      .eq('id', siteId)
+      .then(() => null);
+    setState((prev) => ({
+      ...prev,
+      sites: prev.sites.filter((s) => s.id !== siteId),
+    }));
+  };
+
+  const handleAddClient = (client: Omit<ClientRecord, 'id'>) => {
+    setState((prev) => ({
+      ...prev,
+      clients: [{ id: `client-${Date.now()}`, ...client }, ...prev.clients],
+    }));
+  };
+
+  const handleUpdateClient = (
+    clientId: string,
+    patch: Partial<ClientRecord>
+  ) => {
+    setState((prev) => ({
+      ...prev,
+      clients: prev.clients.map((c) =>
+        c.id === clientId ? { ...c, ...patch } : c
+      ),
+    }));
+  };
+
+  const handleDeleteClient = (clientId: string) => {
+    setState((prev) => ({
+      ...prev,
+      clients: prev.clients.filter((c) => c.id !== clientId),
+    }));
+  };
+
+  const handleAddEmployee = (emp: Omit<EmployeeRecord, 'id'>) => {
+    setState((prev) => ({
+      ...prev,
+      employees: [{ id: `emp-${Date.now()}`, ...emp }, ...prev.employees],
+    }));
+  };
+
+  const handleUpdateEmployee = (
+    empId: string,
+    patch: Partial<EmployeeRecord>
+  ) => {
+    setState((prev) => ({
+      ...prev,
+      employees: prev.employees.map((e) =>
+        e.id === empId ? { ...e, ...patch } : e
+      ),
+    }));
+  };
+
+  const handleDeleteEmployee = (empId: string) => {
+    setState((prev) => ({
+      ...prev,
+      employees: prev.employees.filter((e) => e.id !== empId),
+    }));
+  };
+
   const handleApproveShift = (shiftId: string) => {
     setState((prev) => ({
       ...prev,
@@ -386,6 +612,22 @@ export default function SecurityManagementApp() {
     }));
   };
 
+  const handleUpdateShift = (shiftId: string, patch: Partial<ShiftRecord>) => {
+    setState((prev) => ({
+      ...prev,
+      shifts: prev.shifts.map((s) =>
+        s.id === shiftId ? { ...s, ...patch } : s
+      ),
+    }));
+  };
+
+  const handleDeleteShift = (shiftId: string) => {
+    setState((prev) => ({
+      ...prev,
+      shifts: prev.shifts.filter((s) => s.id !== shiftId),
+    }));
+  };
+
   const handleReviewLeave = (
     leaveId: string,
     decision: 'Approved' | 'Declined'
@@ -408,6 +650,15 @@ export default function SecurityManagementApp() {
     }));
   };
 
+  const handleDeleteDisciplinary = (discId: string) => {
+    setState((prev) => ({
+      ...prev,
+      disciplinaryRecords: prev.disciplinaryRecords.filter(
+        (d) => d.id !== discId
+      ),
+    }));
+  };
+
   const handleRenewCertification = (empId: string) => {
     setState((prev) => ({
       ...prev,
@@ -423,19 +674,30 @@ export default function SecurityManagementApp() {
     }));
   };
 
-  const handleAddSite = (site: Omit<SiteRecord, 'id'>) => {
-    persistSiteToSupabase(site);
-    setState((prev) => ({
-      ...prev,
-      sites: [{ id: `site-${Date.now()}`, ...site }, ...prev.sites],
-    }));
-  };
-
   const handleCreateIncident = (inc: Omit<IncidentRecord, 'id'>) => {
     persistIncidentToSupabase(inc);
     setState((prev) => ({
       ...prev,
       incidents: [{ id: `inc-${Date.now()}`, ...inc }, ...prev.incidents],
+    }));
+  };
+
+  const handleUpdateIncident = (
+    incId: string,
+    patch: Partial<IncidentRecord>
+  ) => {
+    setState((prev) => ({
+      ...prev,
+      incidents: prev.incidents.map((i) =>
+        i.id === incId ? { ...i, ...patch } : i
+      ),
+    }));
+  };
+
+  const handleDeleteIncident = (incId: string) => {
+    setState((prev) => ({
+      ...prev,
+      incidents: prev.incidents.filter((i) => i.id !== incId),
     }));
   };
 
@@ -477,6 +739,22 @@ export default function SecurityManagementApp() {
     }));
   };
 
+  const handleUpdateCITJob = (jobId: string, patch: Partial<CITJobRecord>) => {
+    setState((prev) => ({
+      ...prev,
+      citJobs: prev.citJobs.map((j) =>
+        j.id === jobId ? { ...j, ...patch } : j
+      ),
+    }));
+  };
+
+  const handleDeleteCITJob = (jobId: string) => {
+    setState((prev) => ({
+      ...prev,
+      citJobs: prev.citJobs.filter((j) => j.id !== jobId),
+    }));
+  };
+
   const handleAdvanceCITStatus = (jobId: string, custodianName: string) => {
     setState((prev) => ({
       ...prev,
@@ -515,6 +793,25 @@ export default function SecurityManagementApp() {
     }));
   };
 
+  const handleUpdateCCTVJob = (
+    jobId: string,
+    patch: Partial<CCTVJobRecord>
+  ) => {
+    setState((prev) => ({
+      ...prev,
+      cctvJobs: prev.cctvJobs.map((j) =>
+        j.id === jobId ? { ...j, ...patch } : j
+      ),
+    }));
+  };
+
+  const handleDeleteCCTVJob = (jobId: string) => {
+    setState((prev) => ({
+      ...prev,
+      cctvJobs: prev.cctvJobs.filter((j) => j.id !== jobId),
+    }));
+  };
+
   const handleAdvanceCCTVJob = (jobId: string) => {
     setState((prev) => ({
       ...prev,
@@ -531,7 +828,7 @@ export default function SecurityManagementApp() {
           status: nextStatus,
           signedOffBy:
             nextStatus === 'Completed'
-              ? `${currentUser?.fullName} (${currentUser?.role})`
+              ? `${currentUser?.username} (${currentUser?.role})`
               : job.signedOffBy,
         };
       }),
@@ -543,6 +840,25 @@ export default function SecurityManagementApp() {
     setState((prev) => ({
       ...prev,
       invoices: [{ id: `inv-${Date.now()}`, ...inv }, ...prev.invoices],
+    }));
+  };
+
+  const handleUpdateInvoice = (
+    invId: string,
+    patch: Partial<InvoiceRecord>
+  ) => {
+    setState((prev) => ({
+      ...prev,
+      invoices: prev.invoices.map((inv) =>
+        inv.id === invId ? { ...inv, ...patch } : inv
+      ),
+    }));
+  };
+
+  const handleDeleteInvoice = (invId: string) => {
+    setState((prev) => ({
+      ...prev,
+      invoices: prev.invoices.filter((inv) => inv.id !== invId),
     }));
   };
 
@@ -662,7 +978,7 @@ export default function SecurityManagementApp() {
           MAIN WORKSPACE VIEWPORT
          ===================================================================== */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Top Bar Contract: Brand/Breadcrumb on left, User/Role/Sign-Out on right */}
+        {/* Top Bar Contract: Brand/Breadcrumb on left, Username Only / Role / Sign-Out on right */}
         <header className="bg-[#0B192C] text-white border-b border-slate-800 px-6 py-3.5 flex items-center justify-between gap-6">
           <div className="flex items-center gap-3">
             <button
@@ -679,16 +995,15 @@ export default function SecurityManagementApp() {
           </div>
 
           <div className="flex items-center gap-4 text-xs shrink-0">
-            <div className="hidden sm:flex items-center gap-2 text-slate-200">
-              <span className="font-semibold text-white">
-                {currentUser.fullName}
-              </span>
-              <span aria-hidden="true">·</span>
-              <span className="font-mono text-slate-300">
+            <div
+              data-testid="topbar-username-display"
+              className="hidden sm:flex items-center gap-2 text-slate-200"
+            >
+              <span className="font-mono font-bold text-white">
                 {currentUser.username}
               </span>
               <span aria-hidden="true">·</span>
-              <span className="font-mono font-semibold text-white">
+              <span className="font-mono text-slate-300">
                 {currentUser.role}
               </span>
             </div>
@@ -769,6 +1084,11 @@ export default function SecurityManagementApp() {
               onGuardClockToggle={handleGuardClockToggle}
               onReviewLeave={handleReviewLeave}
               onAdvanceCCTVJob={handleAdvanceCCTVJob}
+              onDeleteSite={handleDeleteSite}
+              onUpdateSite={handleUpdateSite}
+              onAddServiceLine={handleAddServiceLine}
+              onUpdateServiceLine={handleUpdateServiceLine}
+              onDeleteServiceLine={handleDeleteServiceLine}
             />
           )}
 
@@ -777,10 +1097,15 @@ export default function SecurityManagementApp() {
               currentUser={currentUser}
               state={state}
               onCreateAccount={handleCreateAccount}
+              onUpdateAccount={handleUpdateAccount}
+              onDeleteAccount={handleDeleteAccount}
               onChangeRole={handleChangeRole}
               onToggleStatus={handleToggleAccountStatus}
               onResetPassword={handleResetPassword}
               onUpdateOpsFinanceAccess={handleUpdateOpsFinanceAccess}
+              onAddRole={handleAddRole}
+              onEditRole={handleEditRole}
+              onDeleteRole={handleDeleteRole}
             />
           )}
 
@@ -790,7 +1115,11 @@ export default function SecurityManagementApp() {
               state={state}
               onReviewLeave={handleReviewLeave}
               onAddDisciplinary={handleAddDisciplinary}
+              onDeleteDisciplinary={handleDeleteDisciplinary}
               onRenewCertification={handleRenewCertification}
+              onAddEmployee={handleAddEmployee}
+              onUpdateEmployee={handleUpdateEmployee}
+              onDeleteEmployee={handleDeleteEmployee}
             />
           )}
 
@@ -799,6 +1128,8 @@ export default function SecurityManagementApp() {
               currentUser={currentUser}
               state={state}
               onCreateShift={handleCreateShift}
+              onUpdateShift={handleUpdateShift}
+              onDeleteShift={handleDeleteShift}
               onApproveShift={handleApproveShift}
               onGuardClockToggle={handleGuardClockToggle}
               onMarkNoShow={handleMarkNoShow}
@@ -810,6 +1141,14 @@ export default function SecurityManagementApp() {
               currentUser={currentUser}
               state={state}
               onAddSite={handleAddSite}
+              onUpdateSite={handleUpdateSite}
+              onDeleteSite={handleDeleteSite}
+              onAddClient={handleAddClient}
+              onUpdateClient={handleUpdateClient}
+              onDeleteClient={handleDeleteClient}
+              onAddServiceLine={handleAddServiceLine}
+              onUpdateServiceLine={handleUpdateServiceLine}
+              onDeleteServiceLine={handleDeleteServiceLine}
             />
           )}
 
@@ -818,6 +1157,8 @@ export default function SecurityManagementApp() {
               currentUser={currentUser}
               state={state}
               onCreateIncident={handleCreateIncident}
+              onUpdateIncident={handleUpdateIncident}
+              onDeleteIncident={handleDeleteIncident}
               onEscalateIncident={handleEscalateIncident}
               onResolveIncident={handleResolveIncident}
             />
@@ -828,6 +1169,8 @@ export default function SecurityManagementApp() {
               currentUser={currentUser}
               state={state}
               onCreateCITJob={handleCreateCITJob}
+              onUpdateCITJob={handleUpdateCITJob}
+              onDeleteCITJob={handleDeleteCITJob}
               onAdvanceCITStatus={handleAdvanceCITStatus}
             />
           )}
@@ -837,6 +1180,8 @@ export default function SecurityManagementApp() {
               currentUser={currentUser}
               state={state}
               onCreateCCTVJob={handleCreateCCTVJob}
+              onUpdateCCTVJob={handleUpdateCCTVJob}
+              onDeleteCCTVJob={handleDeleteCCTVJob}
               onAdvanceCCTVJob={handleAdvanceCCTVJob}
             />
           )}
@@ -846,6 +1191,8 @@ export default function SecurityManagementApp() {
               currentUser={currentUser}
               state={state}
               onCreateInvoice={handleCreateInvoice}
+              onUpdateInvoice={handleUpdateInvoice}
+              onDeleteInvoice={handleDeleteInvoice}
               onMarkInvoicePaid={handleMarkInvoicePaid}
             />
           )}

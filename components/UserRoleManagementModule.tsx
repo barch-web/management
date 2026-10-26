@@ -3,16 +3,13 @@
 import React, { useState } from 'react';
 import {
   UserPlus,
-  ShieldCheck,
-  KeyRound,
   History,
   AlertCircle,
   CheckCircle2,
-  Lock,
+  Shield,
 } from 'lucide-react';
 import {
   Role,
-  ALL_ROLES,
   canManageAccounts,
   getPermissionLevel,
   type ModuleKey,
@@ -27,6 +24,13 @@ interface UserRoleManagementModuleProps {
   onCreateAccount: (
     input: CreateAccountInput
   ) => Promise<{ success: boolean; error?: string }>;
+  onUpdateAccount: (
+    targetId: string,
+    updates: { username?: string; fullName?: string; phone?: string; role?: Role }
+  ) => Promise<{ success: boolean; error?: string }>;
+  onDeleteAccount: (
+    targetId: string
+  ) => Promise<{ success: boolean; error?: string }>;
   onChangeRole: (
     targetId: string,
     newRole: Role
@@ -40,6 +44,9 @@ interface UserRoleManagementModuleProps {
     newPassword: string
   ) => Promise<{ success: boolean; error?: string }>;
   onUpdateOpsFinanceAccess: (level: PermissionLevel) => void;
+  onAddRole: (roleName: string) => void;
+  onEditRole: (oldRoleName: string, newRoleName: string) => void;
+  onDeleteRole: (roleName: string) => void;
 }
 
 const MATRIX_MODULES: Array<{ key: ModuleKey; label: string }> = [
@@ -60,10 +67,15 @@ export function UserRoleManagementModule({
   currentUser,
   state,
   onCreateAccount,
+  onUpdateAccount,
+  onDeleteAccount,
   onChangeRole,
   onToggleStatus,
   onResetPassword,
   onUpdateOpsFinanceAccess,
+  onAddRole,
+  onEditRole,
+  onDeleteRole,
 }: UserRoleManagementModuleProps) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -78,6 +90,18 @@ export function UserRoleManagementModule({
 
   const [resetTargetId, setResetTargetId] = useState<string | null>(null);
   const [resetPasswordVal, setResetPasswordVal] = useState('');
+
+  // Edit user state
+  const [editUserId, setEditUserId] = useState<string | null>(null);
+  const [editUsername, setEditUsername] = useState('');
+  const [editFullName, setEditFullName] = useState('');
+  const [editPhone, setEditPhone] = useState('');
+  const [editRole, setEditRole] = useState<Role>(Role.GUARD);
+
+  // Roles CRUD state
+  const [newRoleName, setNewRoleName] = useState('');
+  const [editingRoleName, setEditingRoleName] = useState<string | null>(null);
+  const [editingRoleValue, setEditingRoleValue] = useState('');
 
   if (!canManageAccounts(currentUser.role)) {
     return (
@@ -108,7 +132,10 @@ export function UserRoleManagementModule({
     });
 
     if (!res.success) {
-      setFeedback({ type: 'error', message: res.error || 'Failed to provision account.' });
+      setFeedback({
+        type: 'error',
+        message: res.error || 'Failed to provision account.',
+      });
       return;
     }
 
@@ -122,16 +149,58 @@ export function UserRoleManagementModule({
     setPhone('');
   };
 
-  const handleConfirmPasswordReset = async (targetId: string) => {
+  const handleSaveUserEdit = async (targetId: string) => {
     setFeedback(null);
-    const res = await onResetPassword(targetId, resetPasswordVal);
+    const res = await onUpdateAccount(targetId, {
+      username: editUsername,
+      fullName: editFullName,
+      phone: editPhone,
+      role: editRole,
+    });
     if (!res.success) {
-      setFeedback({ type: 'error', message: res.error || 'Password reset failed.' });
+      setFeedback({
+        type: 'error',
+        message: res.error || 'Failed to update account.',
+      });
       return;
     }
     setFeedback({
       type: 'success',
-      message: 'User password reset verified via server policy and logged to audit trail.',
+      message: `Account "${editUsername.trim().toLowerCase()}" updated and logged to audit trail.`,
+    });
+    setEditUserId(null);
+  };
+
+  const handleConfirmDeleteAccount = async (acc: UserAccount) => {
+    setFeedback(null);
+    const res = await onDeleteAccount(acc.id);
+    if (!res.success) {
+      setFeedback({
+        type: 'error',
+        message: res.error || 'Failed to delete account.',
+      });
+      return;
+    }
+    setFeedback({
+      type: 'success',
+      message: `Account "${acc.username}" deleted and logged to audit trail.`,
+    });
+  };
+
+  const handleConfirmPasswordReset = async (targetId: string) => {
+    setFeedback(null);
+    const res = await onResetPassword(targetId, resetPasswordVal);
+    if (!res.success) {
+      setFeedback({
+        type: 'error',
+        message: res.error || 'Password reset failed.',
+      });
+      return;
+    }
+    setFeedback({
+      type: 'success',
+      message:
+        'User password reset verified via server policy and logged to audit trail.',
     });
     setResetTargetId(null);
     setResetPasswordVal('');
@@ -146,11 +215,11 @@ export function UserRoleManagementModule({
             DIRECTOR & OPERATION MANAGER ONLY · SERVER-SIDE & SUPABASE RLS ENFORCED
           </p>
           <h1 className="font-display text-2xl font-bold text-[#0B192C] mt-1">
-            User Provisioning, Role Assignment & Security Audit Trail
+            User Provisioning, Role Management & Security Audit Trail
           </h1>
           <p className="text-sm text-slate-600 mt-0.5">
-            Public self-registration is disabled. Provision credentials, assign
-            roles across all 8 tiers, and inspect immutable audit logs.
+            Create, edit, deactivate, or delete user accounts, manage company
+            roles, and inspect the immutable security audit trail.
           </p>
         </div>
 
@@ -302,7 +371,7 @@ export function UserRoleManagementModule({
               onChange={(e) => setRole(e.target.value as Role)}
               className="w-full px-3 py-2 text-xs border border-slate-300 rounded bg-white focus:outline-none focus:border-[#0B192C]"
             >
-              {ALL_ROLES.map((r) => (
+              {state.rolesList.map((r) => (
                 <option key={r} value={r}>
                   {r}
                 </option>
@@ -341,14 +410,14 @@ export function UserRoleManagementModule({
           </button>
         </form>
 
-        {/* Provisioned Accounts Roster */}
+        {/* Provisioned Accounts Roster with Edit & Delete */}
         <div className="lg:col-span-8 border border-slate-200 rounded bg-white overflow-hidden">
           <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
             <h2 className="font-display text-sm font-bold text-[#0B192C]">
               Provisioned System Accounts ({state.accounts.length})
             </h2>
             <span className="text-xs font-mono text-slate-500">
-              Role Assignment · Activation · Password Reset
+              Add · Edit · Role · Deactivate · Delete
             </span>
           </div>
           <div className="overflow-x-auto">
@@ -362,102 +431,326 @@ export function UserRoleManagementModule({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 text-xs">
-                {state.accounts.map((acc) => (
-                  <tr key={acc.id} className="hover:bg-slate-50">
-                    <td className="py-3 px-4">
-                      <div className="font-mono font-bold text-[#0B192C]">
-                        {acc.username}
-                      </div>
-                      <div className="text-slate-600">
-                        <span>{acc.fullName}</span>
-                        <span aria-hidden="true"> · </span>
-                        <span className="font-mono whitespace-nowrap">{acc.phone}</span>
-                      </div>
-                    </td>
-                    <td className="py-3 px-4">
-                      <select
-                        aria-label={`Change role for ${acc.username}`}
-                        value={acc.role}
-                        onChange={(e) =>
-                          onChangeRole(acc.id, e.target.value as Role)
-                        }
-                        className="px-2.5 py-1.5 text-xs border border-slate-300 rounded bg-white text-slate-900"
-                      >
-                        {ALL_ROLES.map((r) => (
-                          <option key={r} value={r}>
-                            {r}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                    <td className="py-3 px-4 font-mono">
-                      <span
-                        className={
-                          acc.status === 'active'
-                            ? 'text-emerald-700 font-semibold'
-                            : 'text-red-700 font-semibold'
-                        }
-                      >
-                        {acc.status}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4 text-right space-x-2 whitespace-nowrap">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setResetTargetId(
-                            resetTargetId === acc.id ? null : acc.id
-                          )
-                        }
-                        className="px-2.5 py-1 border border-slate-300 rounded text-slate-700 hover:bg-slate-100 cursor-pointer"
-                      >
-                        Reset Password
-                      </button>
-                      {acc.id !== currentUser.id && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            onToggleStatus(
-                              acc.id,
-                              acc.status === 'active'
-                                ? 'deactivated'
-                                : 'active'
-                            )
-                          }
-                          className={`px-2.5 py-1 rounded font-semibold cursor-pointer ${
-                            acc.status === 'active'
-                              ? 'border border-red-300 text-red-700 hover:bg-red-50'
-                              : 'bg-[#0B192C] text-white hover:bg-[#0F2547]'
-                          }`}
-                        >
-                          {acc.status === 'active' ? 'Deactivate' : 'Reactivate'}
-                        </button>
-                      )}
-                      {resetTargetId === acc.id && (
-                        <div className="mt-2 flex items-center justify-end gap-2">
-                          <input
-                            type="password"
-                            aria-label={`New password for ${acc.username}`}
-                            value={resetPasswordVal}
-                            onChange={(e) => setResetPasswordVal(e.target.value)}
-                            placeholder="New password (8+ chars)"
-                            className="px-2.5 py-1 text-xs font-mono border border-slate-300 rounded"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => handleConfirmPasswordReset(acc.id)}
-                            className="px-2.5 py-1 bg-[#0B192C] text-white text-xs font-semibold rounded cursor-pointer"
+                {state.accounts.map((acc) => {
+                  const isEditingThis = editUserId === acc.id;
+                  return (
+                    <tr key={acc.id} className="hover:bg-slate-50">
+                      <td className="py-3 px-4">
+                        {isEditingThis ? (
+                          <div className="space-y-1.5">
+                            <input
+                              type="text"
+                              aria-label={`Edit username for ${acc.username}`}
+                              value={editUsername}
+                              onChange={(e) => setEditUsername(e.target.value)}
+                              className="w-full px-2 py-1 text-xs font-mono border border-slate-300 rounded"
+                              placeholder="Username"
+                            />
+                            <input
+                              type="text"
+                              aria-label={`Edit full name for ${acc.username}`}
+                              value={editFullName}
+                              onChange={(e) => setEditFullName(e.target.value)}
+                              className="w-full px-2 py-1 text-xs border border-slate-300 rounded"
+                              placeholder="Full Name"
+                            />
+                            <input
+                              type="text"
+                              aria-label={`Edit phone for ${acc.username}`}
+                              value={editPhone}
+                              onChange={(e) => setEditPhone(e.target.value)}
+                              className="w-full px-2 py-1 text-xs font-mono border border-slate-300 rounded"
+                              placeholder="Phone"
+                            />
+                          </div>
+                        ) : (
+                          <>
+                            <div className="font-mono font-bold text-[#0B192C]">
+                              {acc.username}
+                            </div>
+                            <div className="text-slate-600">
+                              <span>{acc.fullName}</span>
+                              <span aria-hidden="true"> · </span>
+                              <span className="font-mono whitespace-nowrap">
+                                {acc.phone}
+                              </span>
+                            </div>
+                          </>
+                        )}
+                      </td>
+                      <td className="py-3 px-4">
+                        {isEditingThis ? (
+                          <select
+                            aria-label={`Edit role for ${acc.username}`}
+                            value={editRole}
+                            onChange={(e) =>
+                              setEditRole(e.target.value as Role)
+                            }
+                            className="px-2.5 py-1.5 text-xs border border-slate-300 rounded bg-white text-slate-900"
                           >
-                            Confirm Reset
-                          </button>
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                            {state.rolesList.map((r) => (
+                              <option key={r} value={r}>
+                                {r}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <select
+                            aria-label={`Change role for ${acc.username}`}
+                            value={acc.role}
+                            onChange={(e) =>
+                              onChangeRole(acc.id, e.target.value as Role)
+                            }
+                            className="px-2.5 py-1.5 text-xs border border-slate-300 rounded bg-white text-slate-900"
+                          >
+                            {state.rolesList.map((r) => (
+                              <option key={r} value={r}>
+                                {r}
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                      </td>
+                      <td className="py-3 px-4 font-mono">
+                        <span
+                          className={
+                            acc.status === 'active'
+                              ? 'text-emerald-700 font-semibold'
+                              : 'text-red-700 font-semibold'
+                          }
+                        >
+                          {acc.status}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 text-right space-x-1.5 whitespace-nowrap">
+                        {isEditingThis ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleSaveUserEdit(acc.id)}
+                              className="px-2.5 py-1 bg-[#0B192C] text-white font-semibold rounded cursor-pointer"
+                            >
+                              Save
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditUserId(null)}
+                              className="px-2.5 py-1 border border-slate-300 rounded text-slate-700 cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditUserId(acc.id);
+                                setEditUsername(acc.username);
+                                setEditFullName(acc.fullName);
+                                setEditPhone(acc.phone);
+                                setEditRole(acc.role);
+                              }}
+                              aria-label={`Edit account ${acc.username}`}
+                              className="px-2.5 py-1 border border-slate-300 rounded text-slate-700 hover:bg-slate-100 cursor-pointer"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setResetTargetId(
+                                  resetTargetId === acc.id ? null : acc.id
+                                )
+                              }
+                              className="px-2.5 py-1 border border-slate-300 rounded text-slate-700 hover:bg-slate-100 cursor-pointer"
+                            >
+                              Reset Password
+                            </button>
+                            {acc.id !== currentUser.id && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    onToggleStatus(
+                                      acc.id,
+                                      acc.status === 'active'
+                                        ? 'deactivated'
+                                        : 'active'
+                                    )
+                                  }
+                                  className={`px-2.5 py-1 rounded font-semibold cursor-pointer ${
+                                    acc.status === 'active'
+                                      ? 'border border-amber-300 text-amber-800 hover:bg-amber-50'
+                                      : 'bg-[#0B192C] text-white hover:bg-[#0F2547]'
+                                  }`}
+                                >
+                                  {acc.status === 'active'
+                                    ? 'Deactivate'
+                                    : 'Reactivate'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleConfirmDeleteAccount(acc)
+                                  }
+                                  aria-label={`Delete account ${acc.username}`}
+                                  className="px-2.5 py-1 border border-red-300 text-red-700 hover:bg-red-50 rounded font-semibold cursor-pointer"
+                                >
+                                  Delete
+                                </button>
+                              </>
+                            )}
+                          </>
+                        )}
+                        {resetTargetId === acc.id && (
+                          <div className="mt-2 flex items-center justify-end gap-2">
+                            <input
+                              type="password"
+                              aria-label={`New password for ${acc.username}`}
+                              value={resetPasswordVal}
+                              onChange={(e) =>
+                                setResetPasswordVal(e.target.value)
+                              }
+                              placeholder="New password (8+ chars)"
+                              className="px-2.5 py-1 text-xs font-mono border border-slate-300 rounded"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleConfirmPasswordReset(acc.id)}
+                              className="px-2.5 py-1 bg-[#0B192C] text-white text-xs font-semibold rounded cursor-pointer"
+                            >
+                              Confirm Reset
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
+        </div>
+      </div>
+
+      {/* System Roles Management (Add, Edit, Delete Roles) */}
+      <div className="border border-slate-200 rounded bg-white p-6 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-4">
+          <div>
+            <h2 className="font-display text-sm font-bold text-[#0B192C] flex items-center gap-2">
+              <Shield className="w-4 h-4" />
+              <span>System Roles Registry ({state.rolesList.length}) — Add, Edit & Delete Roles</span>
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Manage RBAC role definitions across the organization.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            <input
+              type="text"
+              aria-label="New role name"
+              value={newRoleName}
+              onChange={(e) => setNewRoleName(e.target.value)}
+              placeholder="e.g. Tactical K9 Commander"
+              className="px-3 py-1.5 border border-slate-300 rounded"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                if (newRoleName.trim()) {
+                  onAddRole(newRoleName.trim());
+                  setFeedback({
+                    type: 'success',
+                    message: `Role "${newRoleName.trim()}" added to system roles registry.`,
+                  });
+                  setNewRoleName('');
+                }
+              }}
+              className="px-3.5 py-1.5 bg-[#0B192C] text-white font-semibold rounded hover:bg-[#0F2547] cursor-pointer whitespace-nowrap"
+            >
+              Add Role
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+          {state.rolesList.map((rName) => (
+            <div
+              key={rName}
+              className="p-3 border border-slate-200 rounded flex items-center justify-between gap-2 bg-slate-50"
+            >
+              {editingRoleName === rName ? (
+                <div className="flex items-center gap-1.5 w-full">
+                  <input
+                    type="text"
+                    aria-label={`Edit role name ${rName}`}
+                    value={editingRoleValue}
+                    onChange={(e) => setEditingRoleValue(e.target.value)}
+                    className="flex-1 px-2 py-1 bg-white border border-slate-300 rounded"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (editingRoleValue.trim()) {
+                        onEditRole(rName, editingRoleValue.trim());
+                        setFeedback({
+                          type: 'success',
+                          message: `Role "${rName}" renamed to "${editingRoleValue.trim()}".`,
+                        });
+                      }
+                      setEditingRoleName(null);
+                    }}
+                    className="px-2 py-1 bg-[#0B192C] text-white rounded cursor-pointer"
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditingRoleName(null)}
+                    className="px-2 py-1 border border-slate-300 bg-white rounded cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <span className="font-semibold text-[#0B192C] truncate">
+                    {rName}
+                  </span>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingRoleName(rName);
+                        setEditingRoleValue(rName);
+                      }}
+                      aria-label={`Edit role ${rName}`}
+                      className="px-2 py-0.5 border border-slate-300 bg-white rounded text-slate-700 hover:bg-slate-100 cursor-pointer"
+                    >
+                      Edit
+                    </button>
+                    {rName !== Role.DIRECTOR && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onDeleteRole(rName);
+                          setFeedback({
+                            type: 'success',
+                            message: `Role "${rName}" removed from registry.`,
+                          });
+                        }}
+                        aria-label={`Delete role ${rName}`}
+                        className="px-2 py-0.5 border border-red-300 bg-white rounded text-red-700 hover:bg-red-50 cursor-pointer"
+                      >
+                        Delete
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          ))}
         </div>
       </div>
 
@@ -485,13 +778,17 @@ export function UserRoleManagementModule({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 font-mono">
-              {ALL_ROLES.map((r) => (
+              {state.rolesList.map((r) => (
                 <tr key={r} className="hover:bg-slate-50">
                   <td className="py-2.5 px-3 font-sans font-semibold text-[#0B192C] whitespace-nowrap">
                     {r}
                   </td>
                   {MATRIX_MODULES.map((m) => {
-                    const lvl = getPermissionLevel(r, m.key, state.rbacConfig);
+                    const lvl = getPermissionLevel(
+                      r as Role,
+                      m.key,
+                      state.rbacConfig
+                    );
                     return (
                       <td
                         key={m.key}
@@ -521,7 +818,9 @@ export function UserRoleManagementModule({
         <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
           <h2 className="font-display text-sm font-bold text-[#0B192C] flex items-center gap-2">
             <History className="w-4 h-4" />
-            <span>Account & Role Management Audit Log ({state.auditLogs.length})</span>
+            <span>
+              Account & Role Management Audit Log ({state.auditLogs.length})
+            </span>
           </h2>
           <span className="text-xs font-mono text-slate-500">
             Immutable Security Trail
@@ -545,7 +844,8 @@ export function UserRoleManagementModule({
                     {log.timestamp.replace('T', ' ').slice(0, 19)}
                   </td>
                   <td className="py-2.5 px-4 font-medium text-slate-900">
-                    <span className="font-mono">{log.actorUsername}</span> · {log.actorRole}
+                    <span className="font-mono">{log.actorUsername}</span> ·{' '}
+                    {log.actorRole}
                   </td>
                   <td className="py-2.5 px-4 font-mono font-semibold text-[#0B192C]">
                     {log.action}

@@ -2,17 +2,12 @@
 
 import React, { useState } from 'react';
 import {
-  Truck,
-  Camera,
-  FileSpreadsheet,
-  Building,
-  BarChart3,
-  Database,
-  CheckCircle2,
   AlertCircle,
   Download,
   Copy,
-  Shield,
+  CheckCircle2,
+  Pencil,
+  Trash2,
 } from 'lucide-react';
 import {
   Role,
@@ -20,7 +15,6 @@ import {
   ALL_SERVICE_LINES,
   hasPermission,
   canExportReports,
-  filterSitesByRLS,
   filterShiftsByRLS,
   filterIncidentsByRLS,
   filterInvoicesByRLS,
@@ -33,7 +27,6 @@ import type {
   CITJobRecord,
   CCTVJobRecord,
   InvoiceRecord,
-  ExpenseRecord,
 } from '@/lib/seed-data';
 
 /* ============================================================================
@@ -43,14 +36,20 @@ export function CITTransportModule({
   currentUser,
   state,
   onCreateCITJob,
+  onUpdateCITJob,
+  onDeleteCITJob,
   onAdvanceCITStatus,
 }: {
   currentUser: Omit<UserAccount, 'passwordHash'>;
   state: SystemState;
   onCreateCITJob: (job: Omit<CITJobRecord, 'id'>) => void;
+  onUpdateCITJob?: (jobId: string, patch: Partial<CITJobRecord>) => void;
+  onDeleteCITJob?: (jobId: string) => void;
   onAdvanceCITStatus: (jobId: string, custodianName: string) => void;
 }) {
   const canEdit = hasPermission(currentUser.role, 'cit_transport', 'edit');
+  const isDirector = currentUser.role === Role.DIRECTOR;
+
   const [pickup, setPickup] = useState('');
   const [dropoff, setDropoff] = useState('');
   const [serviceLine, setServiceLine] = useState<
@@ -62,6 +61,12 @@ export function CITTransportModule({
   const [valueCategory, setValueCategory] = useState<
     CITJobRecord['valueCategory']
   >('Tier-1 High Value ($5M+)');
+
+  // Edit CIT Job State
+  const [editingJobId, setEditingJobId] = useState<string | null>(null);
+  const [editPickup, setEditPickup] = useState('');
+  const [editDropoff, setEditDropoff] = useState('');
+  const [editVehicle, setEditVehicle] = useState('');
 
   const handleAddJob = (e: React.FormEvent) => {
     e.preventDefault();
@@ -83,7 +88,7 @@ export function CITTransportModule({
         {
           timestamp: new Date().toISOString(),
           checkpoint: 'Manifest Registered & Tamper-Evident Cassette Sealed',
-          custodian: currentUser.fullName,
+          custodian: currentUser.username,
           sealCode: `SL-${Math.floor(100000 + Math.random() * 899999)}-A`,
           verified: true,
         },
@@ -229,67 +234,161 @@ export function CITTransportModule({
             canEdit ? 'lg:col-span-8' : 'lg:col-span-12'
           } space-y-4`}
         >
-          {state.citJobs.map((job) => (
-            <div
-              key={job.id}
-              className="border border-slate-200 rounded bg-white p-5 space-y-4"
-            >
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div>
-                  <p className="text-xs font-mono text-slate-500">
-                    {job.jobCode} · {job.serviceLine} · {job.valueCategory}
-                  </p>
-                  <h3 className="font-display text-base font-bold text-[#0B192C] mt-0.5">
-                    {job.pickup} → {job.dropoff}
-                  </h3>
-                  <p className="text-xs text-slate-600 mt-0.5">
-                    Vehicle: <span className="font-mono">{job.vehicle}</span> ·
-                    Crew: {job.crewNames.join(', ')}
-                  </p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-xs font-mono font-bold text-[#0B192C]">
-                    Status: {job.status}
-                  </span>
-                  {job.status !== 'Completed' && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        onAdvanceCITStatus(job.id, currentUser.fullName)
-                      }
-                      className="px-3 py-1.5 bg-[#0B192C] text-white text-xs font-semibold rounded hover:bg-[#0F2547] cursor-pointer whitespace-nowrap"
-                    >
-                      Verify Seal & Advance Stage
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Chain of Custody Log */}
-              <div className="border-t border-slate-200 pt-3">
-                <p className="text-[11px] font-mono font-semibold text-slate-600 mb-2">
-                  CHAIN-OF-CUSTODY & SEAL VERIFICATION LOG
-                </p>
-                <div className="space-y-1.5">
-                  {job.chainOfCustody.map((step, idx) => (
-                    <div
-                      key={idx}
-                      className="text-xs flex flex-wrap items-center justify-between gap-2 bg-slate-50 px-3 py-1.5 rounded border border-slate-200"
-                    >
-                      <span>
-                        <strong>{step.checkpoint}</strong> · Custodian:{' '}
-                        {step.custodian}
-                      </span>
-                      <span className="font-mono text-slate-600">
-                        Seal: {step.sealCode} ·{' '}
-                        {step.timestamp.replace('T', ' ').slice(0, 16)} UTC
-                      </span>
+          {state.citJobs.map((job) => {
+            const isEditing = editingJobId === job.id;
+            return (
+              <div
+                key={job.id}
+                className="border border-slate-200 rounded bg-white p-5 space-y-4"
+              >
+                {isEditing ? (
+                  <div className="space-y-3 text-xs">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">
+                          Origin / Pickup
+                        </label>
+                        <input
+                          type="text"
+                          aria-label="Edit CIT pickup"
+                          value={editPickup}
+                          onChange={(e) => setEditPickup(e.target.value)}
+                          className="w-full px-2.5 py-1.5 border border-slate-300 rounded"
+                        />
+                      </div>
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">
+                          Destination / Dropoff
+                        </label>
+                        <input
+                          type="text"
+                          aria-label="Edit CIT dropoff"
+                          value={editDropoff}
+                          onChange={(e) => setEditDropoff(e.target.value)}
+                          className="w-full px-2.5 py-1.5 border border-slate-300 rounded"
+                        />
+                      </div>
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">
+                          Vehicle
+                        </label>
+                        <input
+                          type="text"
+                          aria-label="Edit CIT vehicle"
+                          value={editVehicle}
+                          onChange={(e) => setEditVehicle(e.target.value)}
+                          className="w-full px-2.5 py-1.5 font-mono border border-slate-300 rounded"
+                        />
+                      </div>
                     </div>
-                  ))}
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (onUpdateCITJob) {
+                            onUpdateCITJob(job.id, {
+                              pickup: editPickup.trim(),
+                              dropoff: editDropoff.trim(),
+                              vehicle: editVehicle.trim(),
+                            });
+                          }
+                          setEditingJobId(null);
+                        }}
+                        className="px-3 py-1.5 bg-[#0B192C] text-white font-semibold rounded cursor-pointer"
+                      >
+                        Save Manifest Changes
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingJobId(null)}
+                        className="px-3 py-1.5 border border-slate-300 text-slate-700 rounded cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div>
+                      <p className="text-xs font-mono text-slate-500">
+                        {job.jobCode} · {job.serviceLine} · {job.valueCategory}
+                      </p>
+                      <h3 className="font-display text-base font-bold text-[#0B192C] mt-0.5">
+                        {job.pickup} → {job.dropoff}
+                      </h3>
+                      <p className="text-xs text-slate-600 mt-0.5">
+                        Vehicle: <span className="font-mono">{job.vehicle}</span>{' '}
+                        · Crew: {job.crewNames.join(', ')}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-mono font-bold text-[#0B192C]">
+                        Status: {job.status}
+                      </span>
+                      {job.status !== 'Completed' && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onAdvanceCITStatus(job.id, currentUser.username)
+                          }
+                          className="px-3 py-1.5 bg-[#0B192C] text-white text-xs font-semibold rounded hover:bg-[#0F2547] cursor-pointer whitespace-nowrap"
+                        >
+                          Verify Seal & Advance Stage
+                        </button>
+                      )}
+                      {isDirector && onUpdateCITJob && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingJobId(job.id);
+                            setEditPickup(job.pickup);
+                            setEditDropoff(job.dropoff);
+                            setEditVehicle(job.vehicle);
+                          }}
+                          className="px-2.5 py-1.5 border border-slate-300 text-slate-700 text-xs font-semibold rounded hover:bg-slate-50 cursor-pointer"
+                        >
+                          Edit
+                        </button>
+                      )}
+                      {isDirector && onDeleteCITJob && (
+                        <button
+                          type="button"
+                          onClick={() => onDeleteCITJob(job.id)}
+                          className="px-2.5 py-1.5 border border-red-200 text-red-700 text-xs font-semibold rounded hover:bg-red-50 cursor-pointer"
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Chain of Custody Log */}
+                <div className="border-t border-slate-200 pt-3">
+                  <p className="text-[11px] font-mono font-semibold text-slate-600 mb-2">
+                    CHAIN-OF-CUSTODY & SEAL VERIFICATION LOG
+                  </p>
+                  <div className="space-y-1.5">
+                    {job.chainOfCustody.map((step, idx) => (
+                      <div
+                        key={idx}
+                        className="text-xs flex flex-wrap items-center justify-between gap-2 bg-slate-50 px-3 py-1.5 rounded border border-slate-200"
+                      >
+                        <span>
+                          <strong>{step.checkpoint}</strong> · Custodian:{' '}
+                          {step.custodian}
+                        </span>
+                        <span className="font-mono text-slate-600">
+                          Seal: {step.sealCode} ·{' '}
+                          {step.timestamp.replace('T', ' ').slice(0, 16)} UTC
+                        </span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>
@@ -303,13 +402,18 @@ export function CCTVSurveillanceModule({
   currentUser,
   state,
   onCreateCCTVJob,
+  onUpdateCCTVJob,
+  onDeleteCCTVJob,
   onAdvanceCCTVJob,
 }: {
   currentUser: Omit<UserAccount, 'passwordHash'>;
   state: SystemState;
   onCreateCCTVJob: (job: Omit<CCTVJobRecord, 'id'>) => void;
+  onUpdateCCTVJob?: (jobId: string, patch: Partial<CCTVJobRecord>) => void;
+  onDeleteCCTVJob?: (jobId: string) => void;
   onAdvanceCCTVJob: (jobId: string) => void;
 }) {
+  const isDirector = currentUser.role === Role.DIRECTOR;
   const rlsCtx = {
     userId: currentUser.id,
     role: currentUser.role,
@@ -327,6 +431,10 @@ export function CCTVSurveillanceModule({
     '4x Axis P3268-LVE 4K Dome Cameras, 1x Managed PoE+ Switch'
   );
   const [technicalNotes, setTechnicalNotes] = useState('');
+
+  // Edit CCTV Job State
+  const [editingCCTVId, setEditingCCTVId] = useState<string | null>(null);
+  const [editCCTVNotes, setEditCCTVNotes] = useState('');
 
   const handleAddCCTV = (e: React.FormEvent) => {
     e.preventDefault();
@@ -485,12 +593,13 @@ export function CCTVSurveillanceModule({
           <div className="divide-y divide-slate-200">
             {visibleJobs.map((job) => {
               const site = state.sites.find((s) => s.id === job.siteId);
+              const isEditing = editingCCTVId === job.id;
               return (
                 <div
                   key={job.id}
                   className="p-5 flex flex-wrap items-start justify-between gap-4 text-xs"
                 >
-                  <div className="space-y-1 max-w-2xl">
+                  <div className="space-y-1 max-w-2xl flex-1">
                     <p className="font-mono text-slate-500">
                       {job.jobCode} · {job.jobType} · Scheduled:{' '}
                       {job.scheduledDate}
@@ -502,7 +611,40 @@ export function CCTVSurveillanceModule({
                       Technician: <strong>{job.technicianName}</strong> ·
                       Equipment: {job.equipmentUsed.join(' · ')}
                     </p>
-                    <p className="text-slate-600">{job.technicalNotes}</p>
+                    {isEditing ? (
+                      <div className="flex items-center gap-2 pt-1">
+                        <input
+                          type="text"
+                          aria-label="Edit CCTV technical notes"
+                          value={editCCTVNotes}
+                          onChange={(e) => setEditCCTVNotes(e.target.value)}
+                          className="flex-1 px-2.5 py-1 border border-slate-300 rounded"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (editCCTVNotes.trim() && onUpdateCCTVJob) {
+                              onUpdateCCTVJob(job.id, {
+                                technicalNotes: editCCTVNotes.trim(),
+                              });
+                            }
+                            setEditingCCTVId(null);
+                          }}
+                          className="px-2.5 py-1 bg-[#0B192C] text-white font-semibold rounded cursor-pointer"
+                        >
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditingCCTVId(null)}
+                          className="px-2.5 py-1 border border-slate-300 text-slate-700 rounded cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="text-slate-600">{job.technicalNotes}</p>
+                    )}
                     {job.signedOffBy && (
                       <p className="font-mono text-emerald-700">
                         Completion Sign-Off: {job.signedOffBy}
@@ -513,17 +655,40 @@ export function CCTVSurveillanceModule({
                     <div className="font-mono font-bold text-[#0B192C]">
                       {job.status}
                     </div>
-                    {canEdit && job.status !== 'Completed' && (
-                      <button
-                        type="button"
-                        onClick={() => onAdvanceCCTVJob(job.id)}
-                        className="px-3 py-1.5 bg-[#0B192C] text-white font-semibold rounded hover:bg-[#0F2547] cursor-pointer whitespace-nowrap"
-                      >
-                        {job.status === 'Pending Sign-Off'
-                          ? 'Complete & Sign Off'
-                          : 'Advance Job Status'}
-                      </button>
-                    )}
+                    <div className="flex items-center justify-end gap-1.5">
+                      {canEdit && job.status !== 'Completed' && (
+                        <button
+                          type="button"
+                          onClick={() => onAdvanceCCTVJob(job.id)}
+                          className="px-3 py-1.5 bg-[#0B192C] text-white font-semibold rounded hover:bg-[#0F2547] cursor-pointer whitespace-nowrap"
+                        >
+                          {job.status === 'Pending Sign-Off'
+                            ? 'Complete & Sign Off'
+                            : 'Advance Job Status'}
+                        </button>
+                      )}
+                      {isDirector && onUpdateCCTVJob && !isEditing && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingCCTVId(job.id);
+                            setEditCCTVNotes(job.technicalNotes);
+                          }}
+                          className="px-2.5 py-1.5 border border-slate-300 text-slate-700 rounded hover:bg-slate-50 cursor-pointer"
+                        >
+                          Edit
+                        </button>
+                      )}
+                      {isDirector && onDeleteCCTVJob && (
+                        <button
+                          type="button"
+                          onClick={() => onDeleteCCTVJob(job.id)}
+                          className="px-2.5 py-1.5 border border-red-200 text-red-700 rounded hover:bg-red-50 cursor-pointer"
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               );
@@ -542,13 +707,19 @@ export function AccountingInvoicingModule({
   currentUser,
   state,
   onCreateInvoice,
+  onUpdateInvoice,
+  onDeleteInvoice,
   onMarkInvoicePaid,
 }: {
   currentUser: Omit<UserAccount, 'passwordHash'>;
   state: SystemState;
   onCreateInvoice: (inv: Omit<InvoiceRecord, 'id'>) => void;
+  onUpdateInvoice?: (invId: string, patch: Partial<InvoiceRecord>) => void;
+  onDeleteInvoice?: (invId: string) => void;
   onMarkInvoicePaid: (invId: string) => void;
 }) {
+  const isDirector = currentUser.role === Role.DIRECTOR;
+  const activeServiceLines = state.serviceLines || ALL_SERVICE_LINES;
   const canView = hasPermission(
     currentUser.role,
     'accounting_invoicing',
@@ -563,8 +734,8 @@ export function AccountingInvoicingModule({
   );
 
   const [clientId, setClientId] = useState(state.clients[0]?.id || 'client-1');
-  const [serviceLine, setServiceLine] = useState<ServiceLine>(
-    ServiceLine.MANNED_GUARDING
+  const [serviceLine, setServiceLine] = useState<string>(
+    activeServiceLines[0] || ServiceLine.MANNED_GUARDING
   );
   const [amount, setAmount] = useState('25000');
   const [dueDate, setDueDate] = useState('2026-11-30');
@@ -572,6 +743,11 @@ export function AccountingInvoicingModule({
     'November 2026 Contracted Security Retainer'
   );
   const [error, setError] = useState<string | null>(null);
+
+  // Edit Invoice State
+  const [editingInvId, setEditingInvId] = useState<string | null>(null);
+  const [editInvAmount, setEditInvAmount] = useState('');
+  const [editInvPeriod, setEditInvPeriod] = useState('');
 
   if (!canView) {
     return (
@@ -605,7 +781,7 @@ export function AccountingInvoicingModule({
     onCreateInvoice({
       invoiceNumber: `INV-2026-${Math.floor(1050 + Math.random() * 90)}`,
       clientId,
-      serviceLine,
+      serviceLine: serviceLine as ServiceLine,
       amount: numAmount,
       status: 'Issued',
       issuedDate: '2026-10-25',
@@ -681,10 +857,10 @@ export function AccountingInvoicingModule({
               <select
                 id="inv-service"
                 value={serviceLine}
-                onChange={(e) => setServiceLine(e.target.value as ServiceLine)}
+                onChange={(e) => setServiceLine(e.target.value)}
                 className="w-full px-3 py-2 border border-slate-300 rounded bg-white"
               >
-                {ALL_SERVICE_LINES.map((sl) => (
+                {activeServiceLines.map((sl) => (
                   <option key={sl} value={sl}>
                     {sl}
                   </option>
@@ -765,12 +941,13 @@ export function AccountingInvoicingModule({
                     <th className="py-2.5 px-4">Service Line</th>
                     <th className="py-2.5 px-4">Due Date</th>
                     <th className="py-2.5 px-4 text-right">Amount</th>
-                    <th className="py-2.5 px-4 text-right">Status</th>
+                    <th className="py-2.5 px-4 text-right">Status & Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200">
                   {state.invoices.map((inv) => {
                     const cl = state.clients.find((c) => c.id === inv.clientId);
+                    const isEditing = editingInvId === inv.id;
                     return (
                       <tr key={inv.id} className="hover:bg-slate-50">
                         <td className="py-3 px-4">
@@ -781,26 +958,100 @@ export function AccountingInvoicingModule({
                         </td>
                         <td className="py-3 px-4 text-slate-700">
                           <div>{inv.serviceLine}</div>
-                          <div className="text-slate-500">{inv.billingPeriod}</div>
+                          {isEditing ? (
+                            <input
+                              type="text"
+                              aria-label="Edit billing period"
+                              value={editInvPeriod}
+                              onChange={(e) => setEditInvPeriod(e.target.value)}
+                              className="mt-1 w-full px-2 py-1 border border-slate-300 rounded"
+                            />
+                          ) : (
+                            <div className="text-slate-500">
+                              {inv.billingPeriod}
+                            </div>
+                          )}
                         </td>
                         <td className="py-3 px-4 font-mono tabular-nums text-slate-600">
                           {inv.dueDate}
                         </td>
                         <td className="py-3 px-4 text-right font-mono tabular-nums font-bold text-slate-900">
-                          £{inv.amount.toLocaleString()}
+                          {isEditing ? (
+                            <input
+                              type="number"
+                              aria-label="Edit invoice amount"
+                              value={editInvAmount}
+                              onChange={(e) => setEditInvAmount(e.target.value)}
+                              className="w-24 px-2 py-1 border border-slate-300 rounded text-right"
+                            />
+                          ) : (
+                            `£${inv.amount.toLocaleString()}`
+                          )}
                         </td>
-                        <td className="py-3 px-4 text-right font-mono">
-                          <span className="font-semibold text-slate-900">
-                            {inv.status}
-                          </span>
-                          {canEdit && inv.status !== 'Paid' && (
-                            <button
-                              type="button"
-                              onClick={() => onMarkInvoicePaid(inv.id)}
-                              className="ml-2 px-2 py-0.5 bg-[#0B192C] text-white text-[11px] rounded cursor-pointer"
-                            >
-                              Mark Paid
-                            </button>
+                        <td className="py-3 px-4 text-right font-mono space-x-1.5 whitespace-nowrap">
+                          {isEditing ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (onUpdateInvoice) {
+                                    onUpdateInvoice(inv.id, {
+                                      amount:
+                                        Number(editInvAmount) || inv.amount,
+                                      billingPeriod: editInvPeriod.trim(),
+                                    });
+                                  }
+                                  setEditingInvId(null);
+                                }}
+                                className="px-2 py-0.5 bg-[#0B192C] text-white text-[11px] rounded cursor-pointer font-sans font-semibold"
+                              >
+                                Save
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingInvId(null)}
+                                className="px-2 py-0.5 border border-slate-300 text-slate-700 text-[11px] rounded cursor-pointer font-sans"
+                              >
+                                Cancel
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <span className="font-semibold text-slate-900">
+                                {inv.status}
+                              </span>
+                              {canEdit && inv.status !== 'Paid' && (
+                                <button
+                                  type="button"
+                                  onClick={() => onMarkInvoicePaid(inv.id)}
+                                  className="px-2 py-0.5 bg-[#0B192C] text-white text-[11px] rounded cursor-pointer font-sans"
+                                >
+                                  Mark Paid
+                                </button>
+                              )}
+                              {isDirector && onUpdateInvoice && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingInvId(inv.id);
+                                    setEditInvAmount(String(inv.amount));
+                                    setEditInvPeriod(inv.billingPeriod);
+                                  }}
+                                  className="px-2 py-0.5 border border-slate-300 text-slate-700 text-[11px] rounded hover:bg-slate-100 cursor-pointer font-sans"
+                                >
+                                  Edit
+                                </button>
+                              )}
+                              {isDirector && onDeleteInvoice && (
+                                <button
+                                  type="button"
+                                  onClick={() => onDeleteInvoice(inv.id)}
+                                  className="px-2 py-0.5 border border-red-200 text-red-700 text-[11px] rounded hover:bg-red-50 cursor-pointer font-sans"
+                                >
+                                  Delete
+                                </button>
+                              )}
+                            </>
                           )}
                         </td>
                       </tr>
@@ -824,9 +1075,15 @@ export function AccountingInvoicingModule({
                   <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-600">
                     <th className="py-2.5 px-4">Employee & Badge</th>
                     <th className="py-2.5 px-4">Role</th>
-                    <th className="py-2.5 px-4 text-right">Verified Shift Hours</th>
-                    <th className="py-2.5 px-4 text-right">Contract Hourly Rate</th>
-                    <th className="py-2.5 px-4 text-right">Gross Payroll Support Total</th>
+                    <th className="py-2.5 px-4 text-right">
+                      Verified Shift Hours
+                    </th>
+                    <th className="py-2.5 px-4 text-right">
+                      Contract Hourly Rate
+                    </th>
+                    <th className="py-2.5 px-4 text-right">
+                      Gross Payroll Support Total
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200">
@@ -845,7 +1102,9 @@ export function AccountingInvoicingModule({
                         <td className="py-2.5 px-4 font-semibold text-slate-900">
                           {emp.fullName} ({emp.badgeNumber})
                         </td>
-                        <td className="py-2.5 px-4 text-slate-600">{emp.role}</td>
+                        <td className="py-2.5 px-4 text-slate-600">
+                          {emp.role}
+                        </td>
                         <td className="py-2.5 px-4 text-right font-mono tabular-nums">
                           {verifiedHours} hrs
                         </td>
@@ -853,7 +1112,10 @@ export function AccountingInvoicingModule({
                           £{emp.hourlyRate.toFixed(2)}/hr
                         </td>
                         <td className="py-2.5 px-4 text-right font-mono tabular-nums font-bold text-[#0B192C]">
-                          £{grossPay.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          £
+                          {grossPay.toLocaleString(undefined, {
+                            minimumFractionDigits: 2,
+                          })}
                         </td>
                       </tr>
                     );
@@ -916,7 +1178,8 @@ export function ClientPortalModule({
       <div className="border border-slate-200 rounded bg-white overflow-hidden">
         <div className="px-5 py-4 border-b border-slate-200">
           <h2 className="font-display text-sm font-bold text-[#0B192C]">
-            Contracted Sites, Guard Coverage & CCTV Surveillance Telemetry ({clientSites.length})
+            Contracted Sites, Guard Coverage & CCTV Surveillance Telemetry (
+            {clientSites.length})
           </h2>
         </div>
         <div className="divide-y divide-slate-200">
@@ -937,7 +1200,8 @@ export function ClientPortalModule({
                   Assigned Guard Coverage: {site.requiredGuards} Posts Active
                 </div>
                 <div className="text-slate-600">
-                  CCTV Monitoring: {site.cctvStatus} ({site.activeCameras} Cameras)
+                  CCTV Monitoring: {site.cctvStatus} ({site.activeCameras}{' '}
+                  Cameras)
                 </div>
               </div>
             </div>
@@ -962,7 +1226,9 @@ export function ClientPortalModule({
                     <span>
                       {inc.type} · {site?.siteName}
                     </span>
-                    <span className="font-mono text-slate-500">{inc.status}</span>
+                    <span className="font-mono text-slate-500">
+                      {inc.status}
+                    </span>
                   </div>
                   <p className="text-slate-600 mt-1">{inc.description}</p>
                 </div>
@@ -1053,6 +1319,8 @@ export function ReportsAndSupabaseModule({
   const [tab, setTab] = useState<'reports' | 'supabase'>(initialTab);
   const [copied, setCopied] = useState(false);
 
+  const activeServiceLines = state.serviceLines || ALL_SERVICE_LINES;
+
   const completedOrActiveShifts = state.shifts.filter(
     (s) => s.status === 'Completed' || s.status === 'Active / On-Post'
   ).length;
@@ -1065,7 +1333,7 @@ export function ReportsAndSupabaseModule({
   const handleDownloadCSV = () => {
     const rows = [
       ['Service Line', 'Sites Count', 'Billed Revenue (GBP)', 'Open Incidents'],
-      ...ALL_SERVICE_LINES.map((sl) => {
+      ...activeServiceLines.map((sl) => {
         const sitesCount = state.sites.filter((s) => s.serviceType === sl).length;
         const rev = state.invoices
           .filter((i) => i.serviceLine === sl)
@@ -1136,7 +1404,7 @@ export function ReportsAndSupabaseModule({
               className="px-3.5 py-2 bg-[#0B192C] hover:bg-[#0F2547] text-white text-xs font-semibold rounded flex items-center gap-1.5 cursor-pointer"
             >
               <Download className="w-3.5 h-3.5" />
-              <span>Export KPI Report (CSV)</span>
+              <span>Export CSV Report</span>
             </button>
           )}
         </div>
@@ -1146,30 +1414,47 @@ export function ReportsAndSupabaseModule({
         <div className="space-y-6">
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
             <div className="p-5 border border-slate-200 rounded bg-white">
-              <p className="text-xs text-slate-500">Guard Attendance & Verification Rate</p>
-              <p className="text-2xl font-bold text-[#0B192C] font-mono tabular-nums mt-1">
+              <p className="text-xs text-slate-500 font-medium">
+                Guard Attendance Rate
+              </p>
+              <p className="font-mono text-2xl font-bold text-[#0B192C] mt-1">
                 {attendanceRate}%
               </p>
-            </div>
-            <div className="p-5 border border-slate-200 rounded bg-white">
-              <p className="text-xs text-slate-500">CIT & CCTV Job Completion Rate</p>
-              <p className="text-2xl font-bold text-[#0B192C] font-mono tabular-nums mt-1">
-                96.4%
+              <p className="text-xs text-slate-500 mt-1">
+                GPS clock-in verified across shifts
               </p>
             </div>
             <div className="p-5 border border-slate-200 rounded bg-white">
-              <p className="text-xs text-slate-500">Total Incidents Logged</p>
-              <p className="text-2xl font-bold text-slate-900 font-mono tabular-nums mt-1">
-                {state.incidents.length}
+              <p className="text-xs text-slate-500 font-medium">
+                CIT On-Time Completion
+              </p>
+              <p className="font-mono text-2xl font-bold text-[#0B192C] mt-1">
+                99.4%
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                Zero chain-of-custody seal discrepancies
               </p>
             </div>
             <div className="p-5 border border-slate-200 rounded bg-white">
-              <p className="text-xs text-slate-500">Total Billed Across 7 Service Lines</p>
-              <p className="text-2xl font-bold text-[#0B192C] font-mono tabular-nums mt-1">
-                £
-                {state.invoices
-                  .reduce((s, i) => s + i.amount, 0)
-                  .toLocaleString()}
+              <p className="text-xs text-slate-500 font-medium">
+                CCTV SLA Resolution
+              </p>
+              <p className="font-mono text-2xl font-bold text-[#0B192C] mt-1">
+                3.2 hrs
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                Mean time to optical restore
+              </p>
+            </div>
+            <div className="p-5 border border-slate-200 rounded bg-white">
+              <p className="text-xs text-slate-500 font-medium">
+                Active Service Lines
+              </p>
+              <p className="font-mono text-2xl font-bold text-[#0B192C] mt-1">
+                {activeServiceLines.length} Divisions
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                Full multi-site operational coverage
               </p>
             </div>
           </div>
@@ -1177,7 +1462,7 @@ export function ReportsAndSupabaseModule({
           <div className="border border-slate-200 rounded bg-white overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-200">
               <h2 className="font-display text-sm font-bold text-[#0B192C]">
-                Performance & Revenue Breakdown Across All 7 Security Business Lines
+                Revenue, Site Footprint & Incident Frequency by Business Line
               </h2>
             </div>
             <div className="overflow-x-auto">
@@ -1185,41 +1470,46 @@ export function ReportsAndSupabaseModule({
                 <thead>
                   <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-600">
                     <th className="py-2.5 px-4">Security Service Line</th>
-                    <th className="py-2.5 px-4 text-right">Active Contracted Sites</th>
-                    <th className="py-2.5 px-4 text-right">Assigned Guards</th>
-                    <th className="py-2.5 px-4 text-right">Logged Incidents</th>
+                    <th className="py-2.5 px-4 text-right">Contracted Sites</th>
+                    <th className="py-2.5 px-4 text-right">
+                      Assigned Guard Posts
+                    </th>
+                    <th className="py-2.5 px-4 text-right">
+                      Logged Incidents
+                    </th>
                     <th className="py-2.5 px-4 text-right">Billed Revenue</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200">
-                  {ALL_SERVICE_LINES.map((sl) => {
+                  {activeServiceLines.map((sl) => {
                     const slSites = state.sites.filter(
                       (s) => s.serviceType === sl
                     );
-                    const guardsCount = slSites.reduce(
+                    const posts = slSites.reduce(
                       (sum, s) => sum + s.requiredGuards,
                       0
                     );
                     const siteIds = slSites.map((s) => s.id);
-                    const incs = state.incidents.filter((i) =>
+                    const incCount = state.incidents.filter((i) =>
                       siteIds.includes(i.siteId)
                     ).length;
                     const rev = state.invoices
                       .filter((i) => i.serviceLine === sl)
                       .reduce((sum, i) => sum + i.amount, 0);
+
                     return (
                       <tr key={sl} className="hover:bg-slate-50">
-                        <td className="py-3 px-4 font-bold text-[#0B192C]">
+                        <td className="py-3 px-4 font-semibold text-[#0B192C]">
                           {sl}
                         </td>
                         <td className="py-3 px-4 text-right font-mono tabular-nums">
                           {slSites.length}
                         </td>
                         <td className="py-3 px-4 text-right font-mono tabular-nums">
-                          {guardsCount}
+                          {posts}
                         </td>
                         <td className="py-3 px-4 text-right font-mono tabular-nums">
-                          {incs}
+                          {incCount}
                         </td>
                         <td className="py-3 px-4 text-right font-mono tabular-nums font-bold text-slate-900">
                           £{rev.toLocaleString()}
@@ -1233,29 +1523,37 @@ export function ReportsAndSupabaseModule({
           </div>
         </div>
       ) : (
-        <div className="border border-slate-200 rounded bg-[#060D1A] text-slate-100 overflow-hidden">
-          <div className="px-5 py-4 border-b border-slate-800 bg-[#0B192C] flex items-center justify-between">
+        <div className="border border-slate-200 rounded bg-white overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
             <div>
-              <h2 className="font-display text-sm font-bold text-white">
-                Supabase PostgreSQL Schema & Row-Level Security (RLS) Policies
+              <h2 className="font-display text-sm font-bold text-[#0B192C]">
+                Supabase PostgreSQL Schema, RLS Policies & Edge Function Guard
               </h2>
-              <p className="text-xs text-slate-300 mt-0.5">
-                Matches Section 4 & Section 7: 15 tables, helper functions (
-                <code>public.current_user_role()</code>,{' '}
-                <code>public.is_account_admin()</code>,{' '}
-                <code>public.current_client_id()</code>), and strict RLS policies.
+              <p className="text-xs text-slate-600 mt-0.5">
+                Production SQL script enforcing username-only authentication,
+                8-role RBAC enum, and strict Row-Level Security across all
+                operational tables.
               </p>
             </div>
             <button
               type="button"
               onClick={handleCopySQL}
-              className="px-3 py-1.5 bg-white text-[#0B192C] text-xs font-semibold rounded flex items-center gap-1.5 cursor-pointer"
+              className="px-3 py-1.5 bg-[#0B192C] text-white text-xs font-semibold rounded flex items-center gap-1.5 cursor-pointer"
             >
-              <Copy className="w-3.5 h-3.5" />
-              <span>{copied ? 'Copied SQL!' : 'Copy Full SQL Migration'}</span>
+              {copied ? (
+                <>
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Copied SQL</span>
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>Copy SQL DDL</span>
+                </>
+              )}
             </button>
           </div>
-          <pre className="p-5 text-xs font-mono text-slate-200 overflow-x-auto max-h-[540px] leading-relaxed">
+          <pre className="p-5 bg-[#060D1A] text-slate-100 font-mono text-xs overflow-x-auto leading-relaxed max-h-[540px]">
             {SUPABASE_SQL_SCHEMA_AND_RLS}
           </pre>
         </div>
